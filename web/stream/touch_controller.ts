@@ -1,49 +1,54 @@
-// Add after imports
-import { StreamInput } from './input.js';
+/**
+ * Virtual Touch Controller for Moonlight Web Client
+ */
 
-// ── Touch Controller Configuration ──────────────────────────────────
+import { GamepadState } from './gamepad.js';
+
+// ── Button Flags Mapping (PlayStation Layout) ────────────────────────
+const BUTTON_MAP = {
+    TRIANGLE: 0x1,
+    CIRCLE: 0x2,
+    CROSS: 0x4,
+    SQUARE: 0x8,
+    L1: 0x10,
+    R1: 0x20,
+    L3: 0x40,
+    R3: 0x80,
+    SELECT: 0x100,
+    START: 0x200,
+    UP: 0x400,
+    DOWN: 0x800,
+    LEFT: 0x1000,
+    RIGHT: 0x2000,
+} as const;
+
 interface TouchControllerConfig {
-    /** Opacity of the controller overlay (0-1) */
     opacity?: number;
-    /** Scale factor for controller size */
     scale?: number;
-    /** Whether to show visual feedback on button press */
     showFeedback?: boolean;
-    /** Reference to StreamInput for sending controller data */
-    streamInput?: StreamInput | null;
 }
 
-// ── Virtual Controller State ────────────────────────────────────────
 interface VirtualControllerState {
-    // Button states (bit flags)
     buttons: Set<number>;
-    
-    // Stick values (-1 to 1, normalized)
     leftStickX: number;
     leftStickY: number;
     rightStickX: number;
     rightStickY: number;
+    leftTrigger: number;
+    rightTrigger: number;
 }
 
-// ── Touch Region Definition ─────────────────────────────────────────
 interface TouchRegion {
-    x: number;      // Normalized position (0-1)
-    y: number;
-    width: number;  // Normalized size
-    height: number;
-    type: 'stick' | 'button' | 'dpad';
-    id?: string;
-    buttonFlag?: number;
+    id: string;
+    type: 'stick';
 }
 
-// ── Touch Controller Class ──────────────────────────────────────────
 export class TouchController {
     private container: HTMLElement;
     private config: Required<TouchControllerConfig>;
     private state: VirtualControllerState;
-    private isVisible: boolean = false;
+    private isVisibleFlag: boolean = false;
     
-    // Touch tracking
     private touches: Map<number, {
         region: TouchRegion;
         startX: number;
@@ -53,23 +58,16 @@ export class TouchController {
         isDragging: boolean;
     }> = new Map();
     
-    // Dead zones for sticks (to prevent drift)
     private readonly STICK_DEADZONE = 0.15;
-    private readonly STICK_MAX_RADIUS = 40; // pixels
+    private readonly STICK_MAX_RADIUS = 40;
     
-    // D-pad configuration
-    private readonly DPAD_SIZE = 32; // pixels
-    private dpadActive: 'up' | 'down' | 'left' | 'right' | null = null;
-    
-    // Stream input reference for sending controller data
-    private streamInput: StreamInput | null = null;
+    private dpadActive: string | null = null;
     
     constructor(config?: TouchControllerConfig) {
         this.config = {
             opacity: config?.opacity ?? 0.4,
             scale: config?.scale ?? 1.0,
             showFeedback: config?.showFeedback ?? true,
-            streamInput: config?.streamInput ?? null,
         };
         
         this.state = {
@@ -78,41 +76,25 @@ export class TouchController {
             leftStickY: 0,
             rightStickX: 0,
             rightStickY: 0,
+            leftTrigger: 0,
+            rightTrigger: 0,
         };
         
         this.container = this.createControllerDOM();
     }
     
-    // ── DOM Creation ────────────────────────────────────────────────
     private createControllerDOM(): HTMLElement {
         const container = document.createElement('div');
         container.id = 'touch-controller';
         container.className = 'touch-controller';
         container.style.opacity = String(this.config.opacity);
         
-        // Left stick area
-        const leftStick = this.createStickArea('left-stick', 'left');
-        container.appendChild(leftStick);
-        
-        // D-pad (below left stick)
-        const dpad = this.createDPAD();
-        container.appendChild(dpad);
-        
-        // Right stick area
-        const rightStick = this.createStickArea('right-stick', 'right');
-        container.appendChild(rightStick);
-        
-        // Action buttons (PlayStation layout: Triangle, Circle, X, Square)
-        const actionButtons = this.createActionButtons();
-        container.appendChild(actionButtons);
-        
-        // Shoulder buttons (L1/R1)
-        const shoulderButtons = this.createShoulderButtons();
-        container.appendChild(shoulderButtons);
-        
-        // Start/Select buttons
-        const metaButtons = this.createMetaButtons();
-        container.appendChild(metaButtons);
+        container.appendChild(this.createStickArea('left-stick', 'left'));
+        container.appendChild(this.createDPAD());
+        container.appendChild(this.createStickArea('right-stick', 'right'));
+        container.appendChild(this.createActionButtons());
+        container.appendChild(this.createShoulderButtons());
+        container.appendChild(this.createMetaButtons());
         
         return container;
     }
@@ -125,12 +107,16 @@ export class TouchController {
         stick.id = id;
         stick.className = 'virtual-stick';
         
-        // Inner knob that moves
         const knob = document.createElement('div');
         knob.className = 'stick-knob';
         stick.appendChild(knob);
-        
         wrapper.appendChild(stick);
+        
+        stick.addEventListener('touchstart', (e) => this.handleStickStart(e, side), { passive: false });
+        stick.addEventListener('touchmove', (e) => this.handleStickMove(e, side, knob), { passive: false });
+        stick.addEventListener('touchend', (e) => this.handleStickEnd(e, side, knob), { passive: false });
+        stick.addEventListener('touchcancel', (e) => this.handleStickEnd(e, side, knob), { passive: false });
+        
         return wrapper;
     }
     
@@ -139,21 +125,19 @@ export class TouchController {
         dpadContainer.id = 'dpad-container';
         dpadContainer.className = 'dpad';
         
-        // Create 5 buttons (up, down, left, right, center)
-        const directions: Array<{ dir: string, flag: number, label: string }> = [
+        const directions = [
             { dir: 'up', flag: BUTTON_MAP.UP, label: '▲' },
             { dir: 'down', flag: BUTTON_MAP.DOWN, label: '▼' },
             { dir: 'left', flag: BUTTON_MAP.LEFT, label: '◀' },
             { dir: 'right', flag: BUTTON_MAP.RIGHT, label: '▶' },
         ];
         
-        directions.forEach(({ dir, flag }) => {
+        directions.forEach(({ dir, flag, label }) => {
             const btn = document.createElement('div');
             btn.className = `dpad-btn dpad-${dir}`;
             btn.dataset.flag = String(flag);
             btn.textContent = label;
             
-            // Touch events for D-pad
             btn.addEventListener('touchstart', (e) => this.handleDPADStart(e, dir, flag), { passive: false });
             btn.addEventListener('touchend', () => this.handleDPADEnd(), { passive: false });
             btn.addEventListener('touchcancel', () => this.handleDPADEnd(), { passive: false });
@@ -169,8 +153,7 @@ export class TouchController {
         container.id = 'action-buttons';
         container.className = 'action-buttons';
         
-        // PlayStation layout: Triangle, Circle, X, Square in diamond formation
-        const buttons: Array<{ id: string, flag: number, label: string, color: string }> = [
+        const buttons = [
             { id: 'triangle', flag: BUTTON_MAP.TRIANGLE, label: '△', color: '#4CAF50' },
             { id: 'circle', flag: BUTTON_MAP.CIRCLE, label: '○', color: '#F44336' },
             { id: 'cross', flag: BUTTON_MAP.CROSS, label: '✕', color: '#2196F3' },
@@ -184,7 +167,6 @@ export class TouchController {
             btn.dataset.flag = String(flag);
             btn.style.backgroundColor = color;
             
-            // Add symbol overlay
             const symbol = document.createElement('span');
             symbol.textContent = label;
             symbol.style.color = 'white';
@@ -192,7 +174,6 @@ export class TouchController {
             symbol.style.fontWeight = 'bold';
             btn.appendChild(symbol);
             
-            // Touch events
             btn.addEventListener('touchstart', (e) => this.handleButtonStart(e, flag), { passive: false });
             btn.addEventListener('touchend', () => this.handleButtonEnd(flag), { passive: false });
             btn.addEventListener('touchcancel', () => this.handleButtonEnd(flag), { passive: false });
@@ -208,37 +189,52 @@ export class TouchController {
         container.id = 'shoulder-buttons';
         container.className = 'shoulder-buttons';
         
-        // L1 button
-        const l1 = this.createShoulderButton('L1', BUTTON_MAP.L1, 'left');
-        container.appendChild(l1);
-        
-        // R1 button
-        const r1 = this.createShoulderButton('R1', BUTTON_MAP.R1, 'right');
-        container.appendChild(r1);
+        container.appendChild(this.createShoulderButton('L1', BUTTON_MAP.L1, 'left', 'top'));
+        container.appendChild(this.createTriggerButton('L2', 'left', 'bottom'));
+        container.appendChild(this.createShoulderButton('R1', BUTTON_MAP.R1, 'right', 'top'));
+        container.appendChild(this.createTriggerButton('R2', 'right', 'bottom'));
         
         return container;
     }
     
-    private createShoulderButton(id: string, flag: number, side: string): HTMLElement {
+    private createShoulderButton(id: string, flag: number, side: string, vPosition: string): HTMLElement {
         const btn = document.createElement('div');
         btn.id = `btn-${id.toLowerCase()}`;
-        btn.className = 'shoulder-btn';
+        btn.className = `shoulder-btn ${side} ${vPosition}`;
         btn.dataset.flag = String(flag);
         
         const label = document.createElement('span');
         label.textContent = id;
-        label.style.color = 'white';
-        label.style.fontWeight = 'bold';
         btn.appendChild(label);
         
-        // Position based on side
-        btn.style.left = side === 'left' ? '10%' : 'auto';
-        btn.style.right = side === 'right' ? '10%' : 'auto';
-        
-        // Touch events
         btn.addEventListener('touchstart', (e) => this.handleButtonStart(e, flag), { passive: false });
         btn.addEventListener('touchend', () => this.handleButtonEnd(flag), { passive: false });
         btn.addEventListener('touchcancel', () => this.handleButtonEnd(flag), { passive: false });
+        
+        return btn;
+    }
+
+    private createTriggerButton(id: string, side: string, vPosition: string): HTMLElement {
+        const btn = document.createElement('div');
+        btn.id = `btn-${id.toLowerCase()}`;
+        btn.className = `shoulder-btn trigger-btn ${side} ${vPosition}`;
+        
+        const label = document.createElement('span');
+        label.textContent = id;
+        btn.appendChild(label);
+        
+        btn.addEventListener('touchstart', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            if(side === 'left') this.state.leftTrigger = 1.0;
+            if(side === 'right') this.state.rightTrigger = 1.0;
+            if (this.config.showFeedback) btn.classList.add('active');
+        }, { passive: false });
+
+        btn.addEventListener('touchend', () => {
+             if(side === 'left') this.state.leftTrigger = 0.0;
+             if(side === 'right') this.state.rightTrigger = 0.0;
+             btn.classList.remove('active');
+        }, { passive: false });
         
         return btn;
     }
@@ -248,14 +244,8 @@ export class TouchController {
         container.id = 'meta-buttons';
         container.className = 'meta-buttons';
         
-        // Select button (Back)
-        const select = this.createMetaButton('Select', BUTTON_MAP.SELECT);
-        container.appendChild(select);
-        
-        // Start button (Play)
-        const start = this.createMetaButton('Start', BUTTON_MAP.START);
-        container.appendChild(start);
-        
+        container.appendChild(this.createMetaButton('Select', BUTTON_MAP.SELECT));
+        container.appendChild(this.createMetaButton('Start', BUTTON_MAP.START));
         return container;
     }
     
@@ -265,7 +255,6 @@ export class TouchController {
         btn.dataset.flag = String(flag);
         btn.textContent = label;
         
-        // Touch events
         btn.addEventListener('touchstart', (e) => this.handleButtonStart(e, flag), { passive: false });
         btn.addEventListener('touchend', () => this.handleButtonEnd(flag), { passive: false });
         btn.addEventListener('touchcancel', () => this.handleButtonEnd(flag), { passive: false });
@@ -274,67 +263,127 @@ export class TouchController {
     }
     
     // ── Touch Event Handlers ────────────────────────────────────────
-    private handleButtonStart(event: TouchEvent, flag: number) {
+
+    private handleStickStart(event: TouchEvent, side: 'left' | 'right') {
         event.preventDefault();
         event.stopPropagation();
         
-        this.state.buttons.add(flag);
-        if (this.config.showFeedback) {
-            this.flashButton(flag, true);
+        const touch = event.changedTouches[0];
+        this.touches.set(touch.identifier, {
+            region: { id: side, type: 'stick' },
+            startX: touch.clientX,
+            startY: touch.clientY,
+            currentX: touch.clientX,
+            currentY: touch.clientY,
+            isDragging: true
+        });
+    }
+
+    private handleStickMove(event: TouchEvent, side: 'left' | 'right', knobEl: HTMLElement) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        for (let i = 0; i < event.changedTouches.length; i++) {
+            const touch = event.changedTouches[i];
+            const touchData = this.touches.get(touch.identifier);
+
+            if (touchData && touchData.region.id === side && touchData.isDragging) {
+                touchData.currentX = touch.clientX;
+                touchData.currentY = touch.clientY;
+
+                let dx = touchData.currentX - touchData.startX;
+                let dy = touchData.currentY - touchData.startY;
+
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                if (distance > this.STICK_MAX_RADIUS) {
+                    const ratio = this.STICK_MAX_RADIUS / distance;
+                    dx *= ratio;
+                    dy *= ratio;
+                }
+
+                knobEl.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+
+                let normX = dx / this.STICK_MAX_RADIUS;
+                let normY = dy / this.STICK_MAX_RADIUS;
+
+                if (Math.abs(normX) < this.STICK_DEADZONE) normX = 0;
+                if (Math.abs(normY) < this.STICK_DEADZONE) normY = 0;
+
+                if (side === 'left') {
+                    this.state.leftStickX = normX;
+                    this.state.leftStickY = -normY; 
+                } else {
+                    this.state.rightStickX = normX;
+                    this.state.rightStickY = -normY;
+                }
+            }
         }
+    }
+
+    private handleStickEnd(event: TouchEvent, side: 'left' | 'right', knobEl: HTMLElement) {
+        for (let i = 0; i < event.changedTouches.length; i++) {
+            const touch = event.changedTouches[i];
+            const touchData = this.touches.get(touch.identifier);
+
+            if (touchData && touchData.region.id === side) {
+                this.touches.delete(touch.identifier);
+                knobEl.style.transform = `translate(-50%, -50%)`;
+                
+                if (side === 'left') {
+                    this.state.leftStickX = 0;
+                    this.state.leftStickY = 0;
+                } else {
+                    this.state.rightStickX = 0;
+                    this.state.rightStickY = 0;
+                }
+            }
+        }
+    }
+
+    private handleButtonStart(event: TouchEvent, flag: number) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.state.buttons.add(flag);
+        if (this.config.showFeedback) this.flashButton(flag, true);
     }
     
     private handleButtonEnd(flag: number) {
         this.state.buttons.delete(flag);
-        if (this.config.showFeedback) {
-            this.flashButton(flag, false);
-        }
+        if (this.config.showFeedback) this.flashButton(flag, false);
     }
     
     private flashButton(flag: number, pressed: boolean) {
-        // Find the button element with this flag and add/remove active class
         const buttons = document.querySelectorAll(`[data-flag="${flag}"]`);
         buttons.forEach(btn => {
-            if (pressed) {
-                btn.classList.add('active');
-            } else {
-                btn.classList.remove('active');
-            }
+            if (pressed) btn.classList.add('active');
+            else btn.classList.remove('active');
         });
     }
     
     private handleDPADStart(event: TouchEvent, direction: string, flag: number) {
         event.preventDefault();
         event.stopPropagation();
-        
-        this.dpadActive = direction as any;
+        this.dpadActive = direction;
         this.state.buttons.add(flag);
     }
     
     private handleDPADEnd() {
         if (this.dpadActive) {
-            const flag = BUTTON_MAP[this.dpadActive.toUpperCase() as keyof typeof BUTTON_MAP];
+            const key = this.dpadActive.toUpperCase() as keyof typeof BUTTON_MAP;
+            const flag = BUTTON_MAP[key];
             this.state.buttons.delete(flag);
             this.dpadActive = null;
         }
     }
     
-    // ── State Conversion ────────────────────────────────────────────
-    /**
-     * Converts virtual controller state to GamepadState for sending to stream.
-     */
     getGamepadState(): GamepadState {
         let buttonFlags = 0;
-        
-        // Convert button set to flags
-        this.state.buttons.forEach(flag => {
-            buttonFlags |= flag;
-        });
+        this.state.buttons.forEach(flag => { buttonFlags |= flag; });
         
         return {
             buttonFlags,
-            leftTrigger: 0,
-            rightTrigger: 0,
+            leftTrigger: this.state.leftTrigger,
+            rightTrigger: this.state.rightTrigger,
             leftStickX: this.state.leftStickX,
             leftStickY: this.state.leftStickY,
             rightStickX: this.state.rightStickX,
@@ -342,44 +391,38 @@ export class TouchController {
         };
     }
     
-    // ── Visibility Control ──────────────────────────────────────────
     show() {
-        this.isVisible = true;
-        this.container.style.display = 'flex';
+        this.isVisibleFlag = true;
+        this.container.style.display = 'block';
     }
     
     hide() {
-        this.isVisible = false;
+        this.isVisibleFlag = false;
         this.container.style.display = 'none';
-        
-        // Reset state when hidden
         this.resetState();
     }
     
     toggle() {
-        if (this.isVisible) {
-            this.hide();
-        } else {
-            this.show();
-        }
+        if (this.isVisibleFlag) this.hide();
+        else this.show();
     }
     
-    isVisible(): boolean {
-        return this.isVisible;
+    getIsVisible(): boolean {
+        return this.isVisibleFlag;
     }
     
-    // ── Container Access ────────────────────────────────────────────
     getContainer(): HTMLElement {
         return this.container;
     }
     
-    // ── Cleanup ─────────────────────────────────────────────────────
     private resetState() {
         this.state.buttons.clear();
         this.state.leftStickX = 0;
         this.state.leftStickY = 0;
         this.state.rightStickX = 0;
         this.state.rightStickY = 0;
+        this.state.leftTrigger = 0;
+        this.state.rightTrigger = 0;
         this.touches.clear();
     }
     
