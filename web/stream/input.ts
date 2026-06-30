@@ -2,6 +2,7 @@ import { StreamCapabilities, StreamControllerCapabilities, StreamMouseButton, Tr
 import { showNotification } from "../component/notification.js"
 import { ByteBuffer, I16_MAX, U16_MAX, U8_MAX } from "./buffer.js"
 import { ControllerConfig, emptyGamepadState, extractGamepadState, GamepadState, SUPPORTED_BUTTONS } from "./gamepad.js"
+import { TouchController } from "./touch_controller.js"
 import { convertToKey, convertToModifiers } from "./keyboard.js"
 import { convertToButton } from "./mouse.js"
 import { DataTransportChannel, Transport, TransportChannelIdKey, TransportChannelIdValue } from "./transport/index.js"
