@@ -74,6 +74,7 @@ export const en = {
         invertAB: "Invert A and B",
         invertXY: "Invert X and Y",
         overrideControllerInterval: "Override Controller State Send Interval",
+        touchController: "Show Touch Controller",
         other: "Other",
         language: "Language",
         dataTransport: "Data Transport",
