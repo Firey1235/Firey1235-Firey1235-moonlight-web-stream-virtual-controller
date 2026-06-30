@@ -38,6 +38,7 @@ const trueDefaultSettings: Settings =
         // possible values: null or a number, example: 60, 120
         "sendIntervalOverride": null
     },
+    "touchControllerVisible": false,
     // possible values: "auto", "webrtc", "websocket"
     "dataTransport": "auto",
     "language": "en",
