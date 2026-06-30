@@ -27,6 +27,7 @@ export type Settings = {
     touchMode: TouchMode
     localCursorSensitivity: number
     controllerConfig: ControllerConfig
+    touchControllerVisible: boolean  // NEW: visibility toggle for virtual controller
     dataTransport: TransportType
     language: Language
     enterFullscreenOnStreamStart: boolean
@@ -177,6 +178,7 @@ export class StreamSettingsComponent implements Component {
     private controllerInvertAB: InputComponent
     private controllerInvertXY: InputComponent
     private controllerSendIntervalOverride: InputComponent
+    private touchControllerVisible: InputComponent
 
     private otherHeader: HTMLHeadingElement = document.createElement("h3")
     private dataTransport: SelectComponent
@@ -459,9 +461,17 @@ export class StreamSettingsComponent implements Component {
         this.controllerSendIntervalOverride.addChangeListener(this.onSettingsChange.bind(this))
         this.controllerSendIntervalOverride.mount(this.divElement)
 
+        // Touch Controller Visibility Toggle
+        this.touchControllerVisible = new InputComponent("touchControllerVisible", "checkbox", i.touchController, {
+            checked: settings?.touchControllerVisible ?? defaultSettings_.touchControllerVisible
+        })
+        this.touchControllerVisible.addChangeListener(this.onSettingsChange.bind(this))
+        this.touchControllerVisible.mount(this.divElement)
+
         if (!window.isSecureContext) {
             this.controllerInvertAB.setEnabled(false)
             this.controllerInvertXY.setEnabled(false)
+            this.touchControllerVisible.setEnabled(false)
         }
 
         // Other
@@ -582,6 +592,8 @@ export class StreamSettingsComponent implements Component {
         } else {
             settings.controllerConfig.sendIntervalOverride = null
         }
+
+        settings.touchControllerVisible = this.touchControllerVisible.isChecked()
 
         settings.dataTransport = this.dataTransport.getValue() as any
         settings.language = this.language.getValue() as Language
