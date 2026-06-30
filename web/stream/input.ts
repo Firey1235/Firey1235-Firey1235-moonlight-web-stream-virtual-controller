@@ -52,6 +52,7 @@ export type StreamInputConfig = {
     touchMode: TouchMode
     localCursorSensitivity: number
     controllerConfig: ControllerConfig
+    virtualControllerVisible: boolean // <-- Added for Touch Controller
 }
 
 export function defaultStreamInputConfig(): StreamInputConfig {
@@ -64,7 +65,8 @@ export function defaultStreamInputConfig(): StreamInputConfig {
             invertAB: false,
             invertXY: false,
             sendIntervalOverride: null
-        }
+        },
+        virtualControllerVisible: false // <-- Added for Touch Controller
     }
 }
 
@@ -95,8 +97,29 @@ export class StreamInput {
     private touchSupported: boolean | null = null
     private localCursorPosition: [number, number] | null = null
 
+    // --- Virtual Touch Controller Properties ---
+    private touchController: TouchController | null = null
+    private touchControllerInterval: number | null = null
+    // -------------------------------------------
+
     constructor(config?: StreamInputConfig) {
         this.config = defaultStreamInputConfig()
+        
+        // --- Virtual Touch Controller Setup ---
+        this.touchController = new TouchController()
+        document.body.appendChild(this.touchController.getContainer())
+        
+        this.touchControllerInterval = window.setInterval(() => {
+            if (this.touchController?.getIsVisible()) {
+                const state = this.touchController.getGamepadState()
+                // Send to channel 0 (Player 1) if the channel is open
+                if (this.controllerInputs.length > 0 && this.controllerInputs[0]) {
+                    this.sendController(0, state)
+                }
+            }
+        }, 16) // ~60fps polling rate
+        // --------------------------------------
+
         if (config) {
             this.setConfig(config)
         }
@@ -141,6 +164,14 @@ export class StreamInput {
 
     setConfig(config: StreamInputConfig) {
         Object.assign(this.config, config)
+
+        // --- Virtual Touch Controller Visibility ---
+        if (this.config.virtualControllerVisible) {
+            this.touchController?.show()
+        } else {
+            this.touchController?.hide()
+        }
+        // -------------------------------------------
 
         // Touch
         this.primaryTouch = null
