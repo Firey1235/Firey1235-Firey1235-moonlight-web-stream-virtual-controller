@@ -35,6 +35,10 @@ export function normalizeLanguage(language: unknown): Language {
     }
     return "en"
 }
+settings: {
+    // ... other settings
+    touchController: "Enable Virtual Touch Controller",
+}
 
 function getStoredSettings(): Record<string, unknown> | null {
     try {
